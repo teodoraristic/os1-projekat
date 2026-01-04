@@ -1,2 +1,2 @@
 # os-projekat
-projekat iz Operativnih sistema 1 na Elektrotehnickom fakultetu u Beogradu
+projekat iz Operativnih sistema 1 za 20 poena
