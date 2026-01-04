@@ -563,4 +563,171 @@ void ping_test() {
     printString("=== Ping Test Completed ===\n");
 }
 
+=======================JOIN_ALL=================================
+class TCB {
+public:
+    using Body = void (*)(void*);
+    static long gPid;
+    static long tcbCount;
+
+    ~TCB() { MemoryAllocator::mem_free(stack); }
+
+    bool isFinished() const { return finished; }
+    void setFinished(const bool value){finished = value;}
+
+    void block() { blocked = true; }
+    void unblock() { blocked = false; }
+    bool isBlocked() const { return blocked; }
+
+    bool isMain() const { return main; }
+    long getPid() const { return myPid; }
+
+    static TCB *createThread(TCB::Body body, void* arg);
+    static void yield();
+    static void dispatch();
+    static int exit();
+
+    int joinAll();
+    void addChild(TCB* child);
+    void notifyParent();
+
+    static TCB* running;
+
+private:
+    TCB(Body body, void* args):
+        body(body),
+        stack(new uint64[DEFAULT_STACK_SIZE]),
+        context({(uint64) &threadWrapper,
+                 stack != nullptr ? (uint64) &stack[DEFAULT_STACK_SIZE] : 0}),
+        finished(false),
+        blocked(false),
+        args(args),
+        main(body==nullptr),
+        myPid(gPid++)
+    {tcbCount++;}
+
+    struct Context {
+        uint64 ra;
+        uint64 sp;
+    };
+
+    Body body;
+    uint64 *stack;
+    Context context;
+
+    bool finished;
+    bool blocked;
+    void *args;
+    bool main;
+    long myPid;
+
+    
+    TCB* parent = nullptr;
+    List<TCB> children;
+    int finishedChildren = 0;
+    bool waitingForJoinAll = false;
+
+    friend class Riscv;
+
+    static void threadWrapper();
+    static void contextSwitch(Context* oldContext, Context* runningContext);
+};
+
+tcb.cpp - implementacija joinAll:
+cpp
+
+#include "../h/tcb.hpp"
+#include "../h/riscv.hpp"
+
+TCB* TCB::running = nullptr;
+long TCB::gPid = 0;
+long TCB::tcbCount = 0;
+
+TCB *TCB::createThread(TCB::Body body, void* arg) {
+    TCB* thr = new TCB(body, arg);
+    
+    if(!thr->isMain()) {
+        if (running) {
+            running->addChild(thr);
+        }
+        Scheduler::put(thr);
+    }
+    return thr;
+}
+
+void TCB::addChild(TCB* child) {
+    child->parent = this;
+    children.addLast(child);
+}
+
+void TCB::notifyParent() {
+    if (parent) {
+        parent->finishedChildren++;
+        
+        if (parent->waitingForJoinAll && parent->finishedChildren >= parent->children.getSize()) {
+            parent->unblock();
+            parent->waitingForJoinAll = false;
+            Scheduler::put(parent);
+        }
+    }
+}
+
+int TCB::joinAll() {
+    TCB* current = running;
+
+    if (current->children.isEmpty()) {
+        return 0;  // Nema dece, odmah vraća uspeh
+    }
+    
+
+    if (current->finishedChildren >= current->children.getSize()) {
+        return 0; 
+    }
+    
+    current->waitingForJoinAll = true;
+    current->block();
+    dispatch();
+    
+    return 0;
+}
+
+void TCB::yield() {
+    uint64 op = 0x13;
+    __asm__ volatile ("mv a0, %[x]" : : [x] "r" (op));
+    __asm__ volatile ("ecall");
+}
+
+void TCB::dispatch() {
+    TCB *old = running;
+    if (!old->isFinished() && !old->isBlocked()) { 
+        Scheduler::put(old); 
+    }
+    running = Scheduler::get();
+    if (running){
+        running->isMain() ? Riscv::ms_sstatus(Riscv::SSTATUS_SPP) : Riscv::mc_sstatus(Riscv::SSTATUS_SPP);
+        TCB::contextSwitch(&old->context, &running->context);
+    }
+}
+
+int TCB::exit() {
+    if(running->isFinished()) return -1;
+    running->setFinished(true);
+    
+    running->notifyParent();
+    
+    dispatch();
+    return 0;
+}
+
+void TCB::threadWrapper(){
+    Riscv::popSppSpie();
+    running->isMain() ? running->cppThread->run() : running->body(running->args);
+    running->setFinished(true);
+    
+    running->notifyParent();
+    
+    TCB::yield();
+}
+
 */
+
